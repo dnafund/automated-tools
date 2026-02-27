@@ -24,7 +24,7 @@ Useful for projects that need multiple Helius API keys for rate-limit rotation.
 
 ```bash
 # Clone
-git clone https://github.com/datthieu/automated-tools.git
+git clone https://github.com/dnafund/automated-tools.git
 cd automated-tools
 
 # Install dependencies
