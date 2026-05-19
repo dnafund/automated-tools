@@ -32,8 +32,10 @@ import argparse
 import os
 import re
 import random
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from playwright_stealth import Stealth
 
 DATA_DIR = Path(__file__).parent
 ACCOUNTS_FILE = DATA_DIR / "accounts.json"
@@ -43,13 +45,9 @@ HELIUS_SIGNUP_URL = "https://dashboard.helius.dev/signup"
 HELIUS_API_KEYS_URL = "https://dashboard.helius.dev/api-keys"
 MAIL72H_URL = "https://mail72h.com"
 
-# mail72h.com credentials (set in .env or environment)
-MAIL72H_USER = os.getenv("MAIL72H_USER")
-MAIL72H_PASS = os.getenv("MAIL72H_PASS")
-
-if not MAIL72H_USER or not MAIL72H_PASS:
-    print("⚠️  Set MAIL72H_USER and MAIL72H_PASS in .env file first!")
-    print("   cp .env.example .env && nano .env")
+# mail72h.com credentials
+MAIL72H_USER = os.getenv("MAIL72H_USER", "datthieu")
+MAIL72H_PASS = os.getenv("MAIL72H_PASS", "Datthieuls123")
 
 
 # ─── Anti-detect helpers ─────────────────────────────────────────
@@ -66,9 +64,14 @@ async def human_type(page_or_locator, text: str, min_delay=50, max_delay=150):
         await asyncio.sleep(random.uniform(min_delay, max_delay) / 1000)
 
 
+STEALTH = Stealth(
+    navigator_languages_override=("vi-VN", "vi"),
+    navigator_platform_override="MacIntel",
+)
+
+
 async def create_stealth_context(browser):
     """Create a browser context with anti-detect settings."""
-    # Randomize viewport slightly
     width = random.randint(1280, 1440)
     height = random.randint(800, 900)
 
@@ -77,7 +80,7 @@ async def create_stealth_context(browser):
         user_agent=(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            f"Chrome/{random.randint(120, 130)}.0.0.0 Safari/537.36"
+            "Chrome/131.0.0.0 Safari/537.36"
         ),
         locale="vi-VN",
         timezone_id="Asia/Ho_Chi_Minh",
@@ -85,27 +88,8 @@ async def create_stealth_context(browser):
         permissions=["clipboard-read", "clipboard-write"],
     )
 
-    # Stealth JS — hide webdriver flags
-    await context.add_init_script("""
-        // Hide webdriver
-        Object.defineProperty(navigator, 'webdriver', { get: () => false });
-        // Fake plugins
-        Object.defineProperty(navigator, 'plugins', {
-            get: () => [1, 2, 3, 4, 5]
-        });
-        // Fake languages
-        Object.defineProperty(navigator, 'languages', {
-            get: () => ['vi-VN', 'vi', 'en-US', 'en']
-        });
-        // Hide automation
-        window.chrome = { runtime: {} };
-        // Fake permissions
-        const originalQuery = window.navigator.permissions.query;
-        window.navigator.permissions.query = (parameters) =>
-            parameters.name === 'notifications'
-                ? Promise.resolve({ state: Notification.permission })
-                : originalQuery(parameters);
-    """)
+    # Apply playwright-stealth evasions
+    await STEALTH.apply_stealth_async(context)
 
     return context
 
@@ -238,7 +222,7 @@ async def _login_mail72h(page) -> bool:
 
         # Verify login
         page_text = await page.inner_text("body")
-        if (MAIL72H_USER and MAIL72H_USER.upper() in page_text.upper()) or "Số dư" in page_text:
+        if "DATTHIEU" in page_text or "Số dư" in page_text or "datthieu" in page_text.lower():
             print("   ✅ mail72h.com login OK")
             return True
 
@@ -381,8 +365,11 @@ async def _signup_helius_for_account(browser, email: str, password: str) -> str:
             await google_btn.first.click()
             print("   🔗 Clicked Google...")
         else:
-            print("   ❌ Không thấy nút Google → click tay, rồi Enter:")
-            input("   > ")
+            if sys.stdin.isatty():
+                print("   ❌ Không thấy nút Google → click tay, rồi Enter:")
+                input("   > ")
+            else:
+                raise Exception("No Google button")
 
         await human_delay(2, 4)
 
@@ -416,11 +403,19 @@ async def _signup_helius_for_account(browser, email: str, password: str) -> str:
                     print(f"   📧 Clicked Next (email pre-filled)")
                     await human_delay(2, 4)
                 else:
-                    print("   ⚠️  Email step unclear → xử lý tay, Enter khi xong:")
+                    if sys.stdin.isatty():
+                        print("   ⚠️  Email step unclear → xử lý tay, Enter khi xong:")
+                        input("   > ")
+                    else:
+                        raise Exception("Email step unclear")
+            except Exception as e:
+                if "Email step" in str(e):
+                    raise
+                if sys.stdin.isatty():
+                    print("   ⚠️  Email input not found → xử lý tay, Enter khi xong:")
                     input("   > ")
-            except Exception:
-                print("   ⚠️  Email input not found → xử lý tay, Enter khi xong:")
-                input("   > ")
+                else:
+                    raise Exception("Email input not found")
 
         # Step 4: Google Sign in — password
         pw_input = page.locator('input[type="password"]:visible, input[name="Passwd"]:visible').first
@@ -436,8 +431,11 @@ async def _signup_helius_for_account(browser, email: str, password: str) -> str:
             print("   🔑 Nhập password")
             await human_delay(3, 6)
         except Exception:
-            print("   ⚠️  Password field issue → xử lý tay, Enter khi xong:")
-            input("   > ")
+            if sys.stdin.isatty():
+                print("   ⚠️  Password field issue → xử lý tay, Enter khi xong:")
+                input("   > ")
+            else:
+                raise Exception("Password field not found")
 
         # Step 5: Speedbump "Tôi hiểu" — bypass scroll bằng JS
         await human_delay(2, 3)
@@ -469,40 +467,162 @@ async def _signup_helius_for_account(browser, email: str, password: str) -> str:
         except Exception:
             pass
 
-        # Step 7: Helius onboarding
+        # Step 7: Complete onboarding + go to API Keys page
         await human_delay(3, 5)
         print(f"   📍 URL: {page.url[:80]}")
 
-        # Tìm nút nào xuất hiện trước: "Create free project" hoặc "Get Started"
-        for attempt in range(3):
-            cf = page.locator('button:has-text("Create free project"), a:has-text("Create free project")')
-            gs = page.locator('button:has-text("Get Started"), a:has-text("Get Started")')
+        # 7a: Handle onboarding form (new Helius flow requires this before /api-keys)
+        if "onboarding" in page.url:
+            print("   📝 Onboarding form detected, filling...")
+            for _ in range(5):  # up to 5 onboarding steps
+                # Fill any visible text input (name / company / project)
+                try:
+                    inputs = page.locator('input[type="text"]:visible, input:not([type]):visible')
+                    for i in range(await inputs.count()):
+                        try:
+                            inp = inputs.nth(i)
+                            val = await inp.input_value()
+                            if not val:
+                                await inp.fill("MyProject")
+                                await human_delay(0.3, 0.8)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                # Click first visible "Next"/"Continue"/"Submit"/"Create"/"Done"/"Skip" button
+                next_btns = page.locator(
+                    'button:has-text("Next"), button:has-text("Continue"), '
+                    'button:has-text("Create"), button:has-text("Submit"), '
+                    'button:has-text("Done"), button:has-text("Skip"), '
+                    'button:has-text("Get started"), button[type="submit"]'
+                )
+                if await next_btns.count() > 0:
+                    try:
+                        await next_btns.first.click()
+                        print(f"   ➡️ Onboarding step (url={page.url[-30:]})")
+                        await human_delay(2, 4)
+                    except Exception:
+                        break
+                else:
+                    break
+                if "onboarding" not in page.url:
+                    break
 
-            if await cf.count() > 0:
-                await human_delay(0.5, 1)
-                await cf.first.click()
-                print("   📦 Create free project")
-                await human_delay(5, 8)
-                break
-            elif await gs.count() > 0:
-                await human_delay(0.5, 1)
-                await gs.first.click()
-                print("   🚀 Get Started")
+        # 7b: Escape onboarding → go to dashboard to check for empty state
+        if "onboarding" in page.url:
+            try:
+                await page.goto("https://dashboard.helius.dev/dashboard", wait_until="domcontentloaded")
                 await human_delay(3, 5)
-                # Sau Get Started sẽ ra pricing → loop lại tìm Create free project
-            else:
+                print(f"   🔗 Nav to /dashboard (url={page.url[-40:]})")
+            except Exception:
+                pass
+
+        # 7c: Handle empty dashboard — click "Get Started" to create first project.
+        # Helius new flow: signup → /dashboard with "Create Your First Project" → click
+        # Get Started → project creation form/modal → then /api-keys has a key.
+        for attempt in range(3):
+            try:
                 await human_delay(2, 3)
+                create_project = page.locator(
+                    'button:visible:has-text("Get Started"), '
+                    'button:visible:has-text("Get started"), '
+                    'button:visible:has-text("Create Your First Project"), '
+                    'button:visible:has-text("Create project"), '
+                    'button:visible:has-text("Create Project")'
+                )
+                btn_count = await create_project.count()
+                print(f"   🔎 Get Started buttons visible: {btn_count}")
+                if btn_count == 0:
+                    break
+                print(f"   📦 Clicking Get Started (attempt {attempt+1})")
+                # Use force + scroll_into_view for reliability
+                await create_project.first.scroll_into_view_if_needed()
+                await create_project.first.click(force=True)
+                await human_delay(4, 7)
+                print(f"   📍 After click: {page.url[-50:]}")
 
+                # Screenshot after click to verify state transition
+                try:
+                    import time as _t
+                    _dbg = DATA_DIR / "_extract_fail"
+                    _dbg.mkdir(exist_ok=True)
+                    await page.screenshot(
+                        path=str(_dbg / f"post_getstarted_{int(_t.time())}.png"),
+                        full_page=True,
+                    )
+                except Exception:
+                    pass
 
-        # Step 8: Đợi về dashboard rồi vào /api-keys
-        await human_delay(2, 3)
-        if "api-keys" not in page.url:
-            await page.goto(HELIUS_API_KEYS_URL, wait_until="domcontentloaded")
-            await human_delay(3, 5)
+                # Fill any visible text input (name/description)
+                try:
+                    inputs = page.locator('input[type="text"]:visible, input:not([type]):visible')
+                    for i in range(await inputs.count()):
+                        inp = inputs.nth(i)
+                        val = await inp.input_value()
+                        if not val:
+                            await inp.fill(f"Scanner{random.randint(100, 999)}")
+                            await human_delay(0.3, 0.8)
+                            print(f"   📝 Filled input with Scanner")
+                except Exception:
+                    pass
+
+                # Click "Start building" (Free plan) if on plan selection page
+                start_free = page.locator('button:visible:has-text("Start building")')
+                sfb_count = await start_free.count()
+                if sfb_count > 0:
+                    try:
+                        await start_free.first.scroll_into_view_if_needed()
+                        await start_free.first.click(force=True)
+                        print(f"   🆓 Start building (Free plan) clicked")
+                        await human_delay(5, 8)
+                        print(f"   📍 After Free plan: {page.url[-50:]}")
+                        # Screenshot after plan selection
+                        try:
+                            import time as _t
+                            _dbg = DATA_DIR / "_extract_fail"
+                            await page.screenshot(
+                                path=str(_dbg / f"post_freeplan_{int(_t.time())}.png"),
+                                full_page=True,
+                            )
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        print(f"   Start building err: {e}")
+                    continue  # re-check for more steps
+
+                # Click generic Create/Submit/Continue
+                submit_btn = page.locator(
+                    'button:visible:has-text("Create"), '
+                    'button:visible:has-text("Submit"), '
+                    'button:visible:has-text("Continue"), '
+                    'button:visible:has-text("Next"), '
+                    'button:visible[type="submit"]'
+                )
+                sub_count = await submit_btn.count()
+                print(f"   🔎 Submit buttons visible: {sub_count}")
+                if sub_count > 0:
+                    try:
+                        await submit_btn.first.click(force=True)
+                        print("   ✅ Submit clicked")
+                        await human_delay(5, 8)
+                    except Exception as e:
+                        print(f"   Submit click err: {e}")
+            except Exception as e:
+                print(f"   Get Started loop err: {e}")
+                break
+
+        # 7d: Force navigate to /api-keys
+        if "/api-keys" not in page.url:
+            try:
+                await page.goto(HELIUS_API_KEYS_URL, wait_until="domcontentloaded")
+                print(f"   🔗 Force nav to /api-keys (url={page.url[-40:]})")
+                await human_delay(3, 5)
+            except Exception:
+                pass
 
         # 8b: Nếu chưa có key → click "Create new"
         try:
-            no_keys = page.locator('text="No API keys found"')
+            no_keys = page.locator('text=/No API keys found/i')
             await no_keys.wait_for(timeout=5000)
             print("   📭 No keys → Create new...")
             create_btn = page.locator('button:has-text("Create new"), button:has-text("Create New")')
@@ -541,13 +661,65 @@ async def _extract_api_key(page) -> str:
     """Extract API key from Helius /api-keys page.
 
     Strategies (in order):
-    1. Intercept clipboard + click copy button (most reliable)
-    2. Click eye icon to reveal key, then read text
-    3. Parse page for key patterns (UUID, long alphanumeric)
-    4. Read input/code elements
+    1. Network response intercept (/api/keys XHR — most reliable)
+    2. Intercept clipboard + click copy button
+    3. Click eye icon to reveal key, then read text
+    4. Parse page for key patterns (UUID, long alphanumeric)
+    5. Read input/code elements
     """
     await human_delay(1.5, 3)
     print("   🔍 Extracting API key...")
+
+    # ── Strategy 0: Network intercept — capture /api/keys or /api/projects response ──
+    # Helius dashboard fetches keys via XHR; key appears plaintext in JSON response.
+    try:
+        captured_key = {"value": ""}
+
+        async def _on_response(response):
+            try:
+                url = response.url
+                if any(p in url for p in ["/api/keys", "/api/projects", "/apiKeys", "/keys"]):
+                    if response.status == 200:
+                        try:
+                            data = await response.json()
+                        except Exception:
+                            return
+                        # Walk JSON for UUID pattern values
+                        import json as _json
+                        text = _json.dumps(data)
+                        for m in re.findall(
+                            r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}',
+                            text,
+                        ):
+                            if m not in page.url:
+                                captured_key["value"] = m
+                                break
+                        # Also check for "apiKey" / "api_key" field
+                        if not captured_key["value"]:
+                            for key_field in ("apiKey", "api_key", "key"):
+                                if key_field in text:
+                                    m2 = re.search(
+                                        rf'"{key_field}"\s*:\s*"([^"]+)"', text
+                                    )
+                                    if m2 and len(m2.group(1)) > 15:
+                                        captured_key["value"] = m2.group(1)
+                                        break
+            except Exception:
+                pass
+
+        page.on("response", _on_response)
+
+        # Trigger refetch by reloading page
+        await page.reload(wait_until="networkidle")
+        await human_delay(2, 4)
+
+        if captured_key["value"]:
+            print(f"   ✅ Key from network: {captured_key['value'][:16]}...")
+            page.remove_listener("response", _on_response)
+            return captured_key["value"]
+        page.remove_listener("response", _on_response)
+    except Exception as e:
+        print(f"   (network intercept failed: {e})")
 
     # ── Strategy 1: Clipboard intercept + copy button ──
     # Monkey-patch clipboard.writeText to capture copied value
@@ -681,6 +853,18 @@ async def _extract_api_key(page) -> str:
             continue
 
     print("   ❌ Không tìm thấy key tự động")
+    # Save debug artifacts for inspection
+    try:
+        import time as _t
+        stamp = int(_t.time())
+        debug_dir = DATA_DIR / "_extract_fail"
+        debug_dir.mkdir(exist_ok=True)
+        await page.screenshot(path=str(debug_dir / f"{stamp}_{page.url[-30:].replace('/','_')}.png"), full_page=True)
+        html = await page.content()
+        (debug_dir / f"{stamp}.html").write_text(html[:100_000], encoding="utf-8")
+        print(f"   🖼️ Debug saved to _extract_fail/{stamp}_*")
+    except Exception:
+        pass
     return ""
 
 
@@ -801,20 +985,23 @@ async def auto_pipeline(count: int = 10):
                 success_count += 1
                 print(f"   ✅ API Key: {api_key[:16]}...")
             else:
-                print("   ⚠️  Không lấy được key tự động")
-                print("   → Copy API key từ browser, paste vào đây:")
-                manual_key = input("   > ").strip()
-                if manual_key:
-                    keys.append({
-                        "email": email,
-                        "api_key": manual_key,
-                        "created_at": datetime.now(timezone.utc).isoformat(),
-                    })
-                    save_json(KEYS_FILE, keys)
-                    account["helius_signed_up"] = True
-                    save_json(ACCOUNTS_FILE, accounts)
-                    success_count += 1
-                    print(f"   ✅ Saved")
+                if sys.stdin.isatty():
+                    print("   ⚠️  Không lấy được key tự động")
+                    print("   → Copy API key từ browser, paste vào đây:")
+                    manual_key = input("   > ").strip()
+                    if manual_key:
+                        keys.append({
+                            "email": email,
+                            "api_key": manual_key,
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                        })
+                        save_json(KEYS_FILE, keys)
+                        account["helius_signed_up"] = True
+                        save_json(ACCOUNTS_FILE, accounts)
+                        success_count += 1
+                        print(f"   ✅ Saved")
+                else:
+                    print("   ⏭️  Skip (non-interactive) — retry later")
 
         await browser.close()
 
@@ -899,9 +1086,10 @@ async def buy_gmail(count: int = 10):
 
 # ─── Signup Helius (standalone) ──────────────────────────────────
 
-async def signup_helius():
-    """Signup Helius for pending accounts."""
+async def signup_helius(workers: int = 1):
+    """Signup Helius for pending accounts. workers > 1 = parallel Chrome instances."""
     from playwright.async_api import async_playwright
+    import threading
 
     accounts = load_json(ACCOUNTS_FILE)
     keys = load_json(KEYS_FILE)
@@ -911,43 +1099,78 @@ async def signup_helius():
         print("❌ No pending accounts. Run 'buy' first or 'add' accounts.")
         return
 
-    print(f"🔑 Signing up {len(pending)} accounts on Helius...")
+    workers = min(workers, len(pending))
+    print(f"🔑 Signing up {len(pending)} accounts on Helius ({workers} workers)...")
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False, slow_mo=random.randint(30, 80))
+    # Thread-safe file writes
+    _lock = threading.Lock()
+    _ok = [0]
+    _fail = [0]
 
-        for i, account in enumerate(pending):
-            email = account["email"]
-            password = account["password"]
-            print(f"\n── [{i + 1}/{len(pending)}] {email} ──")
-
-            api_key = await _signup_helius_for_account(browser, email, password)
-
+    def _save_result(account, api_key):
+        with _lock:
             if api_key:
-                keys.append({
-                    "email": email,
+                # Load fresh from file to avoid overwriting keys from other batches
+                fresh_keys = load_json(KEYS_FILE)
+                fresh_keys.append({
+                    "email": account["email"],
                     "api_key": api_key,
                     "created_at": datetime.now(timezone.utc).isoformat(),
                 })
-                save_json(KEYS_FILE, keys)
+                save_json(KEYS_FILE, fresh_keys)
+                keys.append({"email": account["email"], "api_key": api_key})  # keep in-memory for stats
                 account["helius_signed_up"] = True
-                save_json(ACCOUNTS_FILE, accounts)
-                print(f"   ✅ API Key: {api_key[:16]}...")
+                _ok[0] += 1
             else:
-                print("   → Paste API key thủ công:")
-                manual_key = input("   > ").strip()
-                if manual_key:
-                    keys.append({
-                        "email": email,
-                        "api_key": manual_key,
-                        "created_at": datetime.now(timezone.utc).isoformat(),
-                    })
-                    save_json(KEYS_FILE, keys)
-                    account["helius_signed_up"] = True
-                    save_json(ACCOUNTS_FILE, accounts)
+                account["helius_signed_up"] = "failed"
+                _fail[0] += 1
+            # Load fresh accounts too
+            fresh_accounts = load_json(ACCOUNTS_FILE)
+            for fa in fresh_accounts:
+                if fa["email"] == account["email"]:
+                    fa["helius_signed_up"] = account["helius_signed_up"]
+                    break
+            save_json(ACCOUNTS_FILE, fresh_accounts)
 
-        await browser.close()
+    sem = asyncio.Semaphore(workers)
+    total = len(pending)
 
+    async def _process_one(idx, account, p):
+        async with sem:
+            email = account["email"]
+            password = account["password"]
+            done = _ok[0] + _fail[0]
+            print(f"  [{done+1}/{total}] {email} (w={workers})")
+
+            # Each worker: fresh browser, fresh context — no session leak
+            browser = await p.chromium.launch(
+                headless=True,
+                slow_mo=random.randint(20, 50),
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
+            )
+            try:
+                api_key = await _signup_helius_for_account(browser, email, password)
+                _save_result(account, api_key)
+
+                if api_key:
+                    print(f"   ✅ {api_key[:16]}... (OK:{_ok[0]} Fail:{_fail[0]})")
+                else:
+                    print(f"   ⏭️  Skip (OK:{_ok[0]} Fail:{_fail[0]})")
+            finally:
+                await browser.close()
+
+    async with async_playwright() as p:
+        tasks = [
+            _process_one(i, account, p)
+            for i, account in enumerate(pending)
+        ]
+        await asyncio.gather(*tasks)
+
+    print(f"\n📊 Done! OK: {_ok[0]} | Failed: {_fail[0]} | Total keys: {len(keys)}")
     _print_keys(keys)
     _update_env_file(keys)
 
@@ -961,7 +1184,12 @@ ENV_EXAMPLE = DATA_DIR.parent / ".env.example"
 def _update_env_file(keys: list):
     """Auto-update HELIUS_API_KEYS in .env file.
     Creates .env from .env.example if not exists.
+    Always loads fresh from helius_keys.json to avoid overwriting newer data.
     """
+    # Load fresh from file instead of using stale in-memory copy
+    fresh_keys = load_json(KEYS_FILE)
+    if fresh_keys:
+        keys = fresh_keys
     if not keys:
         return
 
@@ -1056,7 +1284,8 @@ def main():
     buy_p = sub.add_parser("buy", help="Buy Gmail accounts only")
     buy_p.add_argument("--count", type=int, default=10)
 
-    sub.add_parser("signup", help="Signup Helius for pending accounts")
+    signup_p = sub.add_parser("signup", help="Signup Helius for pending accounts")
+    signup_p.add_argument("--workers", "-w", type=int, default=1, help="Parallel Chrome workers (default: 1)")
     sub.add_parser("keys", help="Show collected API keys")
     sub.add_parser("add", help="Manually add accounts")
 
@@ -1067,7 +1296,7 @@ def main():
     elif args.command == "buy":
         asyncio.run(buy_gmail(args.count))
     elif args.command == "signup":
-        asyncio.run(signup_helius())
+        asyncio.run(signup_helius(workers=args.workers))
     elif args.command == "keys":
         show_keys()
     elif args.command == "add":
