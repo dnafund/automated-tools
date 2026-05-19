@@ -147,6 +147,101 @@ automated-tools/
 - If auto-extraction fails, the script falls back to manual paste.
 - Free tiers: Helius 1M credits / 10 rps; Moralis 40k CU/day.
 
+---
+
+## Troubleshooting
+
+### Setup / install
+
+**`playwright._impl._errors.Error: Executable doesn't exist at .../chrome-win/chrome.exe`**
+Chromium binary missing. Run:
+```bash
+playwright install chromium
+```
+
+**`ModuleNotFoundError: No module named 'playwright_stealth'`**
+```bash
+pip install -r requirements.txt
+```
+
+**Windows: garbled output / `UnicodeEncodeError: 'charmap'`**
+The `.bat` launchers already set `PYTHONUTF8=1`. If running manually:
+```powershell
+$env:PYTHONUTF8=1
+python -X utf8 helius_key_farmer.py signup
+```
+
+### Google OAuth
+
+**`Couldn't sign you in` / `This browser or app may not be secure`**
+Google flagged the automation. Fixes (try in order):
+1. Slow down — run `dual_farmer.py signup --seq` instead of concurrent.
+2. Make sure you didn't recently sign in to that Gmail from another IP (use the account once manually first to clear the new-device prompt).
+3. Wait 30–60 min before retrying that account (Google has a short cooldown).
+4. If the account is permanently flagged → mark it failed in `accounts.json` and buy a fresh one.
+
+**Speedbump page (`Confirm it's you` / phone challenge)**
+The script clicks "Try another way" automatically. If it stalls, the page layout changed — open the failed account manually, complete the speedbump once, then re-run the retry script.
+
+**Captcha shown**
+Solve it manually in the visible browser window — the script waits for navigation and resumes. If captchas appear on every run, you're going too fast: lower concurrency to `-w 1` or `-w 2`.
+
+### Helius
+
+**Stuck at `Get Started` button**
+The dashboard sometimes A/B-tests the onboarding. The script tries multiple selectors; if it still fails, complete that one signup manually, set `helius_signed_up: true` in `accounts.json`, and re-run `signup`.
+
+**Key extraction failed → empty `helius_keys.json` entry**
+Run:
+```bash
+python3 _helius_login_retry.py
+```
+Logs in via `/login` and re-extracts. If still failing, the clipboard permission was denied — open the dashboard manually for that account, copy the key, then add it via `python3 helius_key_farmer.py keys` and edit `helius_keys.json` directly.
+
+### Moralis
+
+**Onboarding form field not found** (`role`, `company`, `where_heard`, `telegram`)
+Moralis updates the form labels occasionally. Open `moralis_key_farmer.py` and search for the field's `data-testid` / placeholder string — update to match what you see in DevTools. The other steps (Free plan, payment skip) should still work.
+
+**`Add Payment Option` page won't dismiss**
+The "Add Card Later" button moved. Click it manually once — the script will continue after the dashboard loads.
+
+**Key shown as `•••••••` and never reveals**
+Clipboard interception missed. Run:
+```bash
+python3 _moralis_login_retry.py
+```
+which logs in fresh and intercepts the copy event again.
+
+### Concurrency / rate-limit
+
+**Google blocks after a few accounts**
+Drop to `-w 1` (workers = 1) or use `--seq` in `dual_farmer.py`. The defaults assume a fresh residential IP; on cloud/VPS IPs you'll get flagged faster.
+
+**`429 Too Many Requests` from Helius / Moralis dashboard**
+You're spamming the same IP. Wait 10–15 min and resume — the retry scripts pick up where they left off (idempotent on `*_signed_up` flag).
+
+### Data files
+
+**`accounts.json` got corrupted (truncated / mid-write crash)**
+Check `accounts.json.bak` (the farmers write a backup before each save). Restore it:
+```bash
+cp accounts.json.bak accounts.json
+```
+
+**`pending_accounts.txt` import isn't picking up new accounts**
+Format must be one `email|password` per line. Use `_reset_moralis.py` to re-import — it dedupes against existing emails.
+
+### Logs
+
+Every signup run writes to `helius_farm.log` / `moralis_farm.log`. Search for `ERROR` / `Exception`:
+```bash
+grep -i "error\|exception" helius_farm.log | tail -20
+```
+Retry scripts write to `helius_retry.log` / `moralis_retry.log`.
+
+---
+
 ## Disclaimer
 
 For educational and personal use. Respect the ToS of every platform involved. The maintainer is not responsible for misuse.
